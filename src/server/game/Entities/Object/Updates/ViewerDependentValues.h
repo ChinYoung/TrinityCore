@@ -20,6 +20,7 @@
 
 #include "Conversation.h"
 #include "Creature.h"
+#include "DB2Stores.h"
 #include "GameObject.h"
 #include "Map.h"
 #include "ObjectMgr.h"
@@ -86,41 +87,30 @@ public:
         }
         else if (GameObject const* gameObject = object->ToGameObject())
         {
-            uint16 dynFlags = 0;
-            uint16 pathProgress = 0xFFFF;
+            uint32 dynFlags = GO_DYNFLAG_LO_STATE_TRANSITION_ANIM_DONE;
             switch (gameObject->GetGoType())
             {
+                case GAMEOBJECT_TYPE_BUTTON:
+                case GAMEOBJECT_TYPE_GOOBER:
+                    if (gameObject->HasConditionalInteraction() && gameObject->CanActivateForPlayer(receiver))
+                        if (gameObject->GetGoStateFor(receiver->GetGUID()) != GO_STATE_ACTIVE)
+                            dynFlags |= GO_DYNFLAG_LO_ACTIVATE | GO_DYNFLAG_LO_HIGHLIGHT;
+                    break;
                 case GAMEOBJECT_TYPE_QUESTGIVER:
-                    if (gameObject->ActivateToQuest(receiver))
+                    if (gameObject->CanActivateForPlayer(receiver))
                         dynFlags |= GO_DYNFLAG_LO_ACTIVATE;
                     break;
                 case GAMEOBJECT_TYPE_CHEST:
-                    if (gameObject->ActivateToQuest(receiver))
+                    if (gameObject->HasConditionalInteraction() && gameObject->CanActivateForPlayer(receiver))
                         dynFlags |= GO_DYNFLAG_LO_ACTIVATE | GO_DYNFLAG_LO_SPARKLE | GO_DYNFLAG_LO_HIGHLIGHT;
                     else if (receiver->IsGameMaster())
-                        dynFlags |= GO_DYNFLAG_LO_ACTIVATE;
-                    break;
-                case GAMEOBJECT_TYPE_GOOBER:
-                    if (gameObject->ActivateToQuest(receiver))
-                    {
-                        dynFlags |= GO_DYNFLAG_LO_HIGHLIGHT;
-                        if (gameObject->GetGoStateFor(receiver->GetGUID()) != GO_STATE_ACTIVE)
-                            dynFlags |= GO_DYNFLAG_LO_ACTIVATE;
-                    }
-                    else if (receiver->IsGameMaster())
-                        dynFlags |= GO_DYNFLAG_LO_ACTIVATE;
+                        dynFlags |= GO_DYNFLAG_LO_ACTIVATE | GO_DYNFLAG_LO_SPARKLE;
                     break;
                 case GAMEOBJECT_TYPE_GENERIC:
-                    if (gameObject->ActivateToQuest(receiver))
-                        dynFlags |= GO_DYNFLAG_LO_SPARKLE | GO_DYNFLAG_LO_HIGHLIGHT;
+                case GAMEOBJECT_TYPE_SPELL_FOCUS:
+                    if (gameObject->HasConditionalInteraction() && gameObject->CanActivateForPlayer(receiver))
+                        dynFlags |= GO_DYNFLAG_LO_SPARKLE;
                     break;
-                case GAMEOBJECT_TYPE_TRANSPORT:
-                case GAMEOBJECT_TYPE_MAP_OBJ_TRANSPORT:
-                {
-                    dynFlags = dynamicFlags & 0xFFFF;
-                    pathProgress = dynamicFlags >> 16;
-                    break;
-                }
                 case GAMEOBJECT_TYPE_CAPTURE_POINT:
                     if (!gameObject->CanInteractWithCapturePoint(receiver))
                         dynFlags |= GO_DYNFLAG_LO_NO_INTERACT;
@@ -128,7 +118,7 @@ public:
                         dynFlags &= ~GO_DYNFLAG_LO_NO_INTERACT;
                     break;
                 case GAMEOBJECT_TYPE_GATHERING_NODE:
-                    if (gameObject->ActivateToQuest(receiver))
+                    if (gameObject->HasConditionalInteraction() && gameObject->CanActivateForPlayer(receiver))
                         dynFlags |= GO_DYNFLAG_LO_ACTIVATE | GO_DYNFLAG_LO_SPARKLE | GO_DYNFLAG_LO_HIGHLIGHT;
                     if (gameObject->GetGoStateFor(receiver->GetGUID()) == GO_STATE_ACTIVE)
                         dynFlags |= GO_DYNFLAG_LO_DEPLETED;
@@ -137,10 +127,26 @@ public:
                     break;
             }
 
-            if (!gameObject->MeetsInteractCondition(receiver))
-                dynFlags |= GO_DYNFLAG_LO_NO_INTERACT;
+            if (!receiver->IsGameMaster())
+            {
+                // GO_DYNFLAG_LO_INTERACT_COND should be applied to GOs with conditional interaction (without GO_FLAG_INTERACT_COND) to disable interaction
+                // (Ignore GAMEOBJECT_TYPE_GATHERING_NODE as some profession-related GOs may include quest loot and can always be interacted with)
+                // (Ignore GAMEOBJECT_TYPE_FLAGSTAND as interaction is handled by GO_DYNFLAG_LO_NO_INTERACT)
+                // (Ignore GAMEOBJECT_TYPE_SPELLCASTER as interaction is handled by GO_DYNFLAG_LO_NO_INTERACT)
+                if (gameObject->GetGoType() != GAMEOBJECT_TYPE_GATHERING_NODE && gameObject->GetGoType() != GAMEOBJECT_TYPE_FLAGSTAND && gameObject->GetGoType() != GAMEOBJECT_TYPE_SPELLCASTER)
+                    if (gameObject->HasConditionalInteraction() && !gameObject->HasFlag(GO_FLAG_INTERACT_COND))
+                        dynFlags |= GO_DYNFLAG_LO_INTERACT_COND;
 
-            dynamicFlags = (uint32(pathProgress) << 16) | uint32(dynFlags);
+                if (!gameObject->MeetsInteractCondition(receiver))
+                    dynFlags |= GO_DYNFLAG_LO_NO_INTERACT;
+
+                if (SpawnMetadata const* data = sObjectMgr->GetSpawnMetadata(SPAWN_TYPE_GAMEOBJECT, gameObject->GetSpawnId()))
+                    if (data->spawnTrackingQuestObjectiveId && data->spawnTrackingData)
+                        if (receiver->GetSpawnTrackingStateByObjective(data->spawnTrackingData->SpawnTrackingId, data->spawnTrackingQuestObjectiveId) != SpawnTrackingState::Active)
+                            dynFlags &= ~GO_DYNFLAG_LO_ACTIVATE;
+            }
+
+            dynamicFlags = dynFlags;
         }
 
         return dynamicFlags;
@@ -198,6 +204,78 @@ public:
 };
 
 template<>
+class ViewerDependentValue<UF::UnitData::StateWorldEffectIDsTag>
+{
+public:
+    using value_type = UF::UnitData::StateWorldEffectIDsTag::value_type;
+
+    static value_type GetValue(UF::UnitData const* unitData, Unit const* unit, Player const* receiver)
+    {
+        value_type stateWorldEffects = unitData->StateWorldEffectIDs;
+
+        if (unit->IsCreature())
+            if (SpawnTrackingStateData const* spawnTrackingStateData = unit->GetSpawnTrackingStateDataForPlayer(receiver))
+                stateWorldEffects = spawnTrackingStateData->StateWorldEffects;
+
+        return stateWorldEffects;
+    }
+};
+
+template<>
+class ViewerDependentValue<UF::UnitData::StateSpellVisualIDTag>
+{
+public:
+    using value_type = UF::UnitData::StateSpellVisualIDTag::value_type;
+
+    static value_type GetValue(UF::UnitData const* unitData, Unit const* unit, Player const* receiver)
+    {
+        value_type stateSpellVisual = unitData->StateSpellVisualID;
+
+        if (unit->IsCreature())
+            if (SpawnTrackingStateData const* spawnTrackingStateData = unit->GetSpawnTrackingStateDataForPlayer(receiver))
+                stateSpellVisual = spawnTrackingStateData->StateSpellVisualId.value_or(0);
+
+        return stateSpellVisual;
+    }
+};
+
+template<>
+class ViewerDependentValue<UF::UnitData::StateAnimIDTag>
+{
+public:
+    using value_type = UF::UnitData::StateAnimIDTag::value_type;
+
+    static value_type GetValue(UF::UnitData const* /*unitData*/, Unit const* unit, Player const* receiver)
+    {
+        value_type stateAnimId = sDB2Manager.GetEmptyAnimStateID();
+
+        if (unit->IsCreature())
+            if (SpawnTrackingStateData const* spawnTrackingStateData = unit->GetSpawnTrackingStateDataForPlayer(receiver))
+                stateAnimId = spawnTrackingStateData->StateAnimId.value_or(stateAnimId);
+
+        return stateAnimId;
+    }
+};
+
+template<>
+class ViewerDependentValue<UF::UnitData::StateAnimKitIDTag>
+{
+public:
+    using value_type = UF::UnitData::StateAnimKitIDTag::value_type;
+
+    static value_type GetValue(UF::UnitData const* unitData, Unit const* unit, Player const* receiver)
+    {
+        value_type stateAnimKitId = unitData->StateAnimKitID;
+
+        if (unit->IsCreature())
+            if (SpawnTrackingStateData const* spawnTrackingStateData = unit->GetSpawnTrackingStateDataForPlayer(receiver))
+                stateAnimKitId = spawnTrackingStateData->StateAnimKitId.value_or(0);
+
+        return stateAnimKitId;
+    }
+};
+
+template<>
 class ViewerDependentValue<UF::UnitData::FactionTemplateTag>
 {
 public:
@@ -231,6 +309,23 @@ public:
         // Gamemasters should be always able to interact with units - remove uninteractible flag
         if (receiver->IsGameMaster())
             flags &= ~UNIT_FLAG_UNINTERACTIBLE;
+
+        return flags;
+    }
+};
+
+template<>
+class ViewerDependentValue<UF::UnitData::Flags2Tag>
+{
+public:
+    using value_type = UF::UnitData::Flags2Tag::value_type;
+
+    static value_type GetValue(UF::UnitData const* unitData, Unit const* /*unit*/, Player const* receiver)
+    {
+        value_type flags = unitData->Flags2;
+        // Gamemasters should be always able to interact with units - remove uninteractible flag
+        if (receiver->IsGameMaster())
+            flags &= ~UNIT_FLAG2_UNTARGETABLE_BY_CLIENT;
 
         return flags;
     }
@@ -296,7 +391,7 @@ public:
     static value_type GetValue(UF::UnitData const* unitData, Unit const* unit, Player const* receiver)
     {
         value_type interactSpellId = unitData->InteractSpellID;
-        if (unitData->NpcFlags[0] & UNIT_NPC_FLAG_SPELLCLICK && !interactSpellId)
+        if (unitData->NpcFlags & UNIT_NPC_FLAG_SPELLCLICK && !interactSpellId)
         {
             // this field is not set if there are multiple available spellclick spells
             auto clickBounds = sObjectMgr->GetSpellClickInfoMapBounds(unit->GetEntry());
@@ -323,12 +418,15 @@ class ViewerDependentValue<UF::UnitData::NpcFlagsTag>
 public:
     using value_type = UF::UnitData::NpcFlagsTag::value_type;
 
-    static value_type GetValue(UF::UnitData const* unitData, uint32 i, Unit const* unit, Player const* receiver)
+    static value_type GetValue(UF::UnitData const* unitData, Unit const* unit, Player const* receiver)
     {
-        value_type npcFlag = unitData->NpcFlags[i];
-        if (i == 0)
+        value_type npcFlag = unitData->NpcFlags;
+        if (npcFlag)
         {
-            if (Creature const* creature = unit->ToCreature())
+            if ((!unit->IsInteractionAllowedInCombat() && unit->IsInCombat())
+               || (!unit->IsInteractionAllowedWhileHostile() && unit->IsHostileTo(receiver)))
+                npcFlag = 0;
+            else if (Creature const* creature = unit->ToCreature())
             {
                 if (!receiver->CanSeeGossipOn(creature))
                     npcFlag &= ~(UNIT_NPC_FLAG_GOSSIP | UNIT_NPC_FLAG_QUESTGIVER);
@@ -338,6 +436,93 @@ public:
             }
         }
         return npcFlag;
+    }
+};
+
+template<>
+class ViewerDependentValue<UF::UnitData::NpcFlags2Tag>
+{
+public:
+    using value_type = UF::UnitData::NpcFlags2Tag::value_type;
+
+    static value_type GetValue(UF::UnitData const* unitData, Unit const* unit, Player const* receiver)
+    {
+        value_type npcFlag = unitData->NpcFlags2;
+        if (npcFlag)
+        {
+            if ((!unit->IsInteractionAllowedInCombat() && unit->IsInCombat())
+               || (!unit->IsInteractionAllowedWhileHostile() && unit->IsHostileTo(receiver)))
+                npcFlag = 0;
+        }
+        return npcFlag;
+    }
+};
+
+template<>
+class ViewerDependentValue<UF::GameObjectData::StateWorldEffectIDsTag>
+{
+public:
+    using value_type = UF::GameObjectData::StateWorldEffectIDsTag::value_type;
+
+    static value_type GetValue(UF::GameObjectData const* gameObjectData, GameObject const* gameObject, Player const* receiver)
+    {
+        value_type stateWorldEffects = gameObjectData->StateWorldEffectIDs;
+
+        if (SpawnTrackingStateData const* spawnTrackingStateData = gameObject->GetSpawnTrackingStateDataForPlayer(receiver))
+            stateWorldEffects = spawnTrackingStateData->StateWorldEffects;
+
+        return stateWorldEffects;
+    }
+};
+
+template<>
+class ViewerDependentValue<UF::GameObjectData::StateSpellVisualIDTag>
+{
+public:
+    using value_type = UF::GameObjectData::StateSpellVisualIDTag::value_type;
+
+    static value_type GetValue(UF::GameObjectData const* gameObjectData, GameObject const* gameObject, Player const* receiver)
+    {
+        value_type stateSpellVisual = gameObjectData->StateSpellVisualID;
+
+        if (SpawnTrackingStateData const* spawnTrackingStateData = gameObject->GetSpawnTrackingStateDataForPlayer(receiver))
+            stateSpellVisual = spawnTrackingStateData->StateSpellVisualId.value_or(0);
+
+        return stateSpellVisual;
+    }
+};
+
+template<>
+class ViewerDependentValue<UF::GameObjectData::StateAnimIDTag>
+{
+public:
+    using value_type = UF::GameObjectData::StateAnimIDTag::value_type;
+
+    static value_type GetValue(UF::GameObjectData const* /*gameObjectData*/, GameObject const* gameObject, Player const* receiver)
+    {
+        value_type stateAnimId = sDB2Manager.GetEmptyAnimStateID();
+
+        if (SpawnTrackingStateData const* spawnTrackingStateData = gameObject->GetSpawnTrackingStateDataForPlayer(receiver))
+            stateAnimId = spawnTrackingStateData->StateAnimId.value_or(stateAnimId);
+
+        return stateAnimId;
+    }
+};
+
+template<>
+class ViewerDependentValue<UF::GameObjectData::StateAnimKitIDTag>
+{
+public:
+    using value_type = UF::GameObjectData::StateAnimKitIDTag::value_type;
+
+    static value_type GetValue(UF::GameObjectData const* gameObjectData, GameObject const* gameObject, Player const* receiver)
+    {
+        value_type stateAnimKitId = gameObjectData->SpawnTrackingStateAnimKitID;
+
+        if (SpawnTrackingStateData const* spawnTrackingStateData = gameObject->GetSpawnTrackingStateDataForPlayer(receiver))
+            stateAnimKitId = spawnTrackingStateData->StateAnimKitId.value_or(0);
+
+        return stateAnimKitId;
     }
 };
 
