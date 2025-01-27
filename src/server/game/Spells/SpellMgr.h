@@ -51,6 +51,7 @@ struct SpellCategoriesEntry;
 struct SpellClassOptionsEntry;
 struct SpellCooldownsEntry;
 struct SpellEffectEntry;
+struct SpellEmpowerStageEntry;
 struct SpellEquippedItemsEntry;
 struct SpellInterruptsEntry;
 struct SpellLabelEntry;
@@ -134,7 +135,7 @@ enum ProcFlags : uint32
 {
     PROC_FLAG_NONE                              = 0x00000000,
 
-    PROC_FLAG_HEARTBEAT                         = 0x00000001,    // 00 Killed by agressor - not sure about this flag
+    PROC_FLAG_HEARTBEAT                         = 0x00000001,    // 00 Heartbeat
     PROC_FLAG_KILL                              = 0x00000002,    // 01 Kill target (in most cases need XP/Honor reward)
 
     PROC_FLAG_DEAL_MELEE_SWING                  = 0x00000004,    // 02 Done melee auto attack
@@ -230,9 +231,13 @@ DEFINE_ENUM_FLAG(ProcFlags);
 enum ProcFlags2 : int32
 {
     PROC_FLAG_2_NONE                            = 0x00000000,
-    PROC_FLAG_2_TARGET_DIES                     = 0x00000001,
-    PROC_FLAG_2_KNOCKBACK                       = 0x00000002,
-    PROC_FLAG_2_CAST_SUCCESSFUL                 = 0x00000004
+    PROC_FLAG_2_TARGET_DIES                     = 0x00000001,    // 32 Kill or assist in killing target (not restricted to killing blow)
+    PROC_FLAG_2_KNOCKBACK                       = 0x00000002,    // 33 Knockback
+    PROC_FLAG_2_CAST_SUCCESSFUL                 = 0x00000004,    // 34 Cast Successful
+
+    PROC_FLAG_2_SUCCESSFUL_DISPEL               = 0x00000010,    // 36 Successful dispel
+
+    PROC_FLAG_2_DO_EMOTE                        = 0x00000040     // 38 Do Emote
 };
 
 DEFINE_ENUM_FLAG(ProcFlags2);
@@ -402,16 +407,9 @@ struct SpellThreatEntry
 typedef std::unordered_map<uint32, SpellThreatEntry> SpellThreatMap;
 
 // coordinates for spells (accessed using SpellMgr functions)
-struct SpellTargetPosition
-{
-    uint32 target_mapId;
-    float  target_X;
-    float  target_Y;
-    float  target_Z;
-    float  target_Orientation;
-};
+using SpellTargetPosition = WorldLocation;
 
-typedef std::map<std::pair<uint32 /*spell_id*/, SpellEffIndex /*effIndex*/>, SpellTargetPosition> SpellTargetPositionMap;
+typedef std::multimap<std::pair<uint32 /*spell_id*/, SpellEffIndex /*effIndex*/>, SpellTargetPosition> SpellTargetPositionMap;
 
 // Enum with EffectRadiusIndex and their actual radius
 enum EffectRadiusIndex
@@ -589,6 +587,7 @@ typedef std::unordered_map<uint32, SpellLearnSkillNode> SpellLearnSkillMap;
 
 struct SpellLearnSpellNode
 {
+    uint32 SourceSpell;
     uint32 Spell;
     uint32 OverridesSpell;
     bool Active;                    // show in spellbook or not
@@ -616,6 +615,8 @@ struct CreatureImmunities
 
 typedef std::multimap<uint32, SpellLearnSpellNode> SpellLearnSpellMap;
 typedef std::pair<SpellLearnSpellMap::const_iterator, SpellLearnSpellMap::const_iterator> SpellLearnSpellMapBounds;
+
+typedef std::multimap<uint32, SpellLearnSpellNode const*> SpellLearnedBySpellMap;
 
 typedef std::multimap<uint32, SkillLineAbilityEntry const*> SkillLineAbilityMap;
 typedef std::pair<SkillLineAbilityMap::const_iterator, SkillLineAbilityMap::const_iterator> SkillLineAbilityMapBounds;
@@ -667,6 +668,7 @@ struct SpellInfoLoadHelper
     SpellClassOptionsEntry const* ClassOptions = nullptr;
     SpellCooldownsEntry const* Cooldowns = nullptr;
     std::array<SpellEffectEntry const*, MAX_SPELL_EFFECTS> Effects = { };
+    std::vector<SpellEmpowerStageEntry const*> EmpowerStages;
     SpellEquippedItemsEntry const* EquippedItems = nullptr;
     SpellInterruptsEntry const* Interrupts = nullptr;
     std::vector<SpellLabelEntry const*> Labels;
@@ -723,9 +725,11 @@ class TC_GAME_API SpellMgr
         SpellLearnSpellMapBounds GetSpellLearnSpellMapBounds(uint32 spell_id) const;
         bool IsSpellLearnSpell(uint32 spell_id) const;
         bool IsSpellLearnToSpell(uint32 spell_id1, uint32 spell_id2) const;
+        Trinity::IteratorPair<SpellLearnedBySpellMap::const_iterator> GetSpellLearnedBySpellMapBounds(uint32 learnedSpellId) const;
 
         // Spell target coordinates
         SpellTargetPosition const* GetSpellTargetPosition(uint32 spell_id, SpellEffIndex effIndex) const;
+        Trinity::IteratorPair<SpellTargetPositionMap::const_iterator> GetSpellTargetPositions(uint32 spell_id, SpellEffIndex effIndex) const;
 
         // Spell Groups table
         SpellSpellGroupMapBounds GetSpellSpellGroupMapBounds(uint32 spell_id) const;
@@ -817,6 +821,7 @@ class TC_GAME_API SpellMgr
         void LoadSpellInfoSpellSpecificAndAuraState();
         void LoadSpellInfoDiminishing();
         void LoadSpellInfoImmunities();
+        void LoadSpellInfoTargetCaps();
         void LoadSpellTotemModel();
 
     private:
@@ -826,6 +831,7 @@ class TC_GAME_API SpellMgr
         SpellRequiredMap           mSpellReq;
         SpellLearnSkillMap         mSpellLearnSkills;
         SpellLearnSpellMap         mSpellLearnSpells;
+        SpellLearnedBySpellMap     mSpellLearnedBySpells;
         SpellTargetPositionMap     mSpellTargetPositions;
         SpellSpellGroupMap         mSpellSpellGroup;
         SpellGroupSpellMap         mSpellGroupSpell;

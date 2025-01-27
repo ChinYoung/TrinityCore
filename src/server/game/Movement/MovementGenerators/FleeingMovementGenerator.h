@@ -28,7 +28,13 @@ struct Position;
 class FleeingMovementGenerator : public MovementGenerator
 {
     public:
-        explicit FleeingMovementGenerator(ObjectGuid fleeTargetGUID);
+        explicit FleeingMovementGenerator(ObjectGuid fleeTargetGUID,
+            Optional<Scripting::v2::ActionResultSetter<MovementStopReason>>&& scriptResult = {});
+        FleeingMovementGenerator(FleeingMovementGenerator const&) = delete;
+        FleeingMovementGenerator(FleeingMovementGenerator&&) = delete;
+        FleeingMovementGenerator& operator=(FleeingMovementGenerator const&) = delete;
+        FleeingMovementGenerator& operator=(FleeingMovementGenerator&&) = delete;
+        ~FleeingMovementGenerator();
 
         MovementGeneratorType GetMovementGeneratorType() const override;
 
@@ -52,7 +58,9 @@ class FleeingMovementGenerator : public MovementGenerator
 class TimedFleeingMovementGenerator : public FleeingMovementGenerator
 {
     public:
-        explicit TimedFleeingMovementGenerator(ObjectGuid fleeTargetGUID, Milliseconds time) : FleeingMovementGenerator(fleeTargetGUID), _totalFleeTime(time) { }
+        explicit TimedFleeingMovementGenerator(ObjectGuid fleeTargetGUID, Milliseconds time,
+            Optional<Scripting::v2::ActionResultSetter<MovementStopReason>>&& scriptResult = {})
+            : FleeingMovementGenerator(fleeTargetGUID, std::move(scriptResult)), _totalFleeTime(time) { }
 
         bool Update(Unit*, uint32) override;
         void Finalize(Unit*, bool, bool) override;
