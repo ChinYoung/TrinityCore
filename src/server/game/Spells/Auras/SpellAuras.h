@@ -18,8 +18,11 @@
 #ifndef TRINITY_SPELLAURAS_H
 #define TRINITY_SPELLAURAS_H
 
+#include "DBStorageIterator.h"
+#include "IteratorPair.h"
 #include "SpellAuraDefines.h"
 #include "SpellInfo.h"
+#include "UniqueTrackablePtr.h"
 #include <typeinfo>
 
 class SpellInfo;
@@ -85,6 +88,7 @@ class TC_GAME_API AuraApplication
 
         uint32 GetEffectsToApply() const { return _effectsToApply; }
         void UpdateApplyEffectMask(uint32 newEffMask, bool canHandleNewEffects);
+        void AddEffectToApplyEffectMask(SpellEffIndex spellEffectIndex);
 
         void SetRemoveMode(AuraRemoveMode mode) { _removeMode = mode; }
         AuraRemoveMode GetRemoveMode() const { return _removeMode; }
@@ -256,12 +260,14 @@ class TC_GAME_API Aura
         float CalcPPMProcChance(Unit* actor) const;
         void SetLastProcAttemptTime(TimePoint lastProcAttemptTime) { m_lastProcAttemptTime = lastProcAttemptTime; }
         void SetLastProcSuccessTime(TimePoint lastProcSuccessTime) { m_lastProcSuccessTime = lastProcSuccessTime; }
+        virtual void Heartbeat() { }
 
         // AuraScript
         void LoadScripts();
         bool CallScriptCheckAreaTargetHandlers(Unit* target);
         void CallScriptDispel(DispelInfo* dispelInfo);
         void CallScriptAfterDispel(DispelInfo* dispelInfo);
+        void CallScriptOnHeartbeat();
         bool CallScriptEffectApplyHandlers(AuraEffect const* aurEff, AuraApplication const* aurApp, AuraEffectHandleModes mode);
         bool CallScriptEffectRemoveHandlers(AuraEffect const* aurEff, AuraApplication const* aurApp, AuraEffectHandleModes mode);
         void CallScriptAfterEffectApplyHandlers(AuraEffect const* aurEff, AuraApplication const* aurApp, AuraEffectHandleModes mode);
@@ -304,9 +310,23 @@ class TC_GAME_API Aura
 
         std::vector<AuraScript*> m_loadedScripts;
 
-        AuraEffectVector const& GetAuraEffects() const { return _effects; }
+        Trinity::IteratorPair<DBStorageIterator<AuraEffect*>> GetAuraEffects()
+        {
+            return Trinity::Containers::MakeIteratorPair(
+                DBStorageIterator(_effects.data(), _effects.size()),
+                DBStorageIterator(_effects.data(), _effects.size(), _effects.size()));
+        }
+        Trinity::IteratorPair<DBStorageIterator<AuraEffect const*>> GetAuraEffects() const
+        {
+            return Trinity::Containers::MakeIteratorPair(
+                DBStorageIterator<AuraEffect const*>(_effects.data(), _effects.size()),
+                DBStorageIterator<AuraEffect const*>(_effects.data(), _effects.size(), _effects.size()));
+        }
+        std::size_t GetAuraEffectCount() const { return _effects.size(); }
 
         virtual std::string GetDebugInfo() const;
+
+        Trinity::unique_weak_ptr<Aura> GetWeakPtr() const { return m_scriptRef; }
 
         Aura(Aura const&) = delete;
         Aura(Aura&&) = delete;
@@ -356,6 +376,9 @@ class TC_GAME_API Aura
         std::vector<AuraApplication*> _removedApplications;
 
         AuraEffectVector _effects;
+
+        struct NoopAuraDeleter { void operator()(Aura*) const { /*noop - not managed*/ } };
+        Trinity::unique_trackable_ptr<Aura> m_scriptRef;
 };
 
 class TC_GAME_API UnitAura : public Aura
@@ -376,6 +399,9 @@ class TC_GAME_API UnitAura : public Aura
         DiminishingGroup GetDiminishGroup() const { return m_AuraDRGroup; }
 
         void AddStaticApplication(Unit* target, uint32 effMask);
+
+        void Heartbeat() override;
+        void HandlePeriodicFoodSpellVisualKit();
 
     private:
         DiminishingGroup m_AuraDRGroup;                 // Diminishing

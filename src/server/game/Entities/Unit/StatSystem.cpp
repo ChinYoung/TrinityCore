@@ -556,9 +556,6 @@ void Player::UpdateMastery()
         {
             for (AuraEffect* auraEff : aura->GetAuraEffects())
             {
-                if (!auraEff)
-                    continue;
-
                 float mult = auraEff->GetSpellEffectInfo().BonusCoefficient;
                 if (G3D::fuzzyEq(mult, 0.0f))
                     continue;
@@ -739,13 +736,10 @@ void Player::UpdateCorruption()
             continue;
         }
 
-        if (PlayerConditionEntry const* playerCondition = sPlayerConditionStore.LookupEntry(corruptionEffect->PlayerConditionID))
+        if (!ConditionMgr::IsPlayerMeetingCondition(this, corruptionEffect->PlayerConditionID))
         {
-            if (!ConditionMgr::IsPlayerMeetingCondition(this, playerCondition))
-            {
-                RemoveAura(corruptionEffect->Aura);
-                continue;
-            }
+            RemoveAura(corruptionEffect->Aura);
+            continue;
         }
 
         CastSpell(this, corruptionEffect->Aura, true);
