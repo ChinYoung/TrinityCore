@@ -1418,15 +1418,11 @@ public:
 
         if (linked)
         {
-            if (Battleground* bg = player->GetBattleground())
-                nearestLoc = bg->GetClosestGraveyard(player);
+
+            if (Battlefield* bf = sBattlefieldMgr->GetBattlefieldToZoneId(player->GetMap(), player->GetZoneId()))
+                nearestLoc = bf->GetClosestGraveyard(player);
             else
-            {
-                if (Battlefield* bf = sBattlefieldMgr->GetBattlefieldToZoneId(player->GetMap(), player->GetZoneId()))
-                    nearestLoc = bf->GetClosestGraveyard(player);
-                else
-                    nearestLoc = sObjectMgr->GetClosestGraveyard(*player, player->GetTeam(), player);
-            }
+                nearestLoc = sObjectMgr->GetClosestGraveyard(*player, player->GetTeam(), player);
         }
         else
         {
@@ -1616,11 +1612,7 @@ public:
             return false;
         }
 
-        PlayerConditionEntry const* playerConditionEntry = sPlayerConditionStore.LookupEntry(playerConditionId);
-        if (!playerConditionEntry)
-            return false;
-
-        if (ConditionMgr::IsPlayerMeetingCondition(target, playerConditionEntry))
+        if (ConditionMgr::IsPlayerMeetingCondition(target, playerConditionId))
             handler->PSendSysMessage("PlayerCondition %u met", playerConditionId);
         else
             handler->PSendSysMessage("PlayerCondition %u not met", playerConditionId);
@@ -1694,7 +1686,7 @@ public:
     static void HandleDebugGuidLimitsMap(ChatHandler* handler, Map* map)
     {
         handler->PSendSysMessage("Map Id: %u Name: '%s' Instance Id: %u Highest Guid Creature: " UI64FMTD " GameObject: " UI64FMTD,
-            map->GetId(), map->GetMapName(), map->GetInstanceId(), uint64(map->GenerateLowGuid<HighGuid::Creature>()), uint64(map->GetMaxLowGuid<HighGuid::GameObject>()));
+            map->GetId(), map->GetMapName(), map->GetInstanceId(), uint64(map->GetMaxLowGuid<HighGuid::Creature>()), uint64(map->GetMaxLowGuid<HighGuid::GameObject>()));
     }
 
     static bool HandleDebugObjectCountCommand(ChatHandler* handler, Optional<uint32> mapId)

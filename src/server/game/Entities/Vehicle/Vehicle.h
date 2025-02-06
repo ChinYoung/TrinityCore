@@ -19,8 +19,9 @@
 #define __TRINITY_VEHICLE_H
 
 #include "Object.h"
-#include "VehicleDefines.h"
+#include "UniqueTrackablePtr.h"
 #include "Unit.h"
+#include "VehicleDefines.h"
 #include <list>
 
 struct VehicleEntry;
@@ -43,7 +44,7 @@ class TC_GAME_API Vehicle final : public TransportBase
         void Reset(bool evading = false);
         void InstallAllAccessories(bool evading);
         void ApplyAllImmunities();
-        void InstallAccessory(uint32 entry, int8 seatId, bool minion, uint8 type, uint32 summonTime);   // May be called from scripts
+        void InstallAccessory(uint32 entry, int8 seatId, bool minion, uint8 type, uint32 summonTime, Optional<uint32> rideSpellId = {});   // May be called from scripts
 
         Unit* GetBase() const { return _me; }
         VehicleEntry const* GetVehicleInfo() const { return _vehicleInfo; }
@@ -72,6 +73,8 @@ class TC_GAME_API Vehicle final : public TransportBase
         Milliseconds GetDespawnDelay();
 
         std::string GetDebugInfo() const;
+
+        Trinity::unique_weak_ptr<Vehicle> GetWeakPtr() const;
 
     protected:
         friend class VehicleJoinEvent;
