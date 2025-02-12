@@ -193,7 +193,14 @@ void TempSummon::InitStats(WorldObject* summoner, Milliseconds duration)
     m_lifetime = duration;
 
     if (m_type == TEMPSUMMON_MANUAL_DESPAWN)
-        m_type = (duration <= 0ms) ? TEMPSUMMON_DEAD_DESPAWN : TEMPSUMMON_TIMED_DESPAWN;
+    {
+        if (duration <= 0s)
+            m_type = TEMPSUMMON_DEAD_DESPAWN;
+        else if (m_Properties && m_Properties->GetFlags().HasFlag(SummonPropertiesFlags::UseDemonTimeout))
+            m_type = TEMPSUMMON_TIMED_DESPAWN_OUT_OF_COMBAT;
+        else
+            m_type = TEMPSUMMON_TIMED_DESPAWN;
+    }
 
     if (summoner && summoner->IsPlayer())
     {
@@ -232,7 +239,12 @@ void TempSummon::InitStats(WorldObject* summoner, Milliseconds duration)
         }
 
         if (!m_Properties->GetFlags().HasFlag(SummonPropertiesFlags::UseCreatureLevel))
-            SetLevel(unitSummoner->GetLevel());
+        {
+            int32 minLevel = m_unitData->ScalingLevelMin + m_unitData->ScalingLevelDelta;
+            int32 maxLevel = m_unitData->ScalingLevelMax + m_unitData->ScalingLevelDelta;
+            uint8 level = std::clamp<int32>(unitSummoner->GetLevel(), minLevel, maxLevel);
+            SetLevel(level);
+        }
     }
 
     uint32 faction = m_Properties->Faction;
@@ -321,9 +333,7 @@ void TempSummon::UnSummon(uint32 msTime)
 {
     if (msTime)
     {
-        ForcedUnsummonDelayEvent* pEvent = new ForcedUnsummonDelayEvent(*this);
-
-        m_Events.AddEvent(pEvent, m_Events.CalculateTime(Milliseconds(msTime)));
+        m_Events.AddEventAtOffset(new ForcedDespawnDelayEvent(*this, 0s), Milliseconds(msTime));
         return;
     }
 
@@ -344,12 +354,6 @@ void TempSummon::UnSummon(uint32 msTime)
     }
 
     AddObjectToRemoveList();
-}
-
-bool ForcedUnsummonDelayEvent::Execute(uint64 /*e_time*/, uint32 /*p_time*/)
-{
-    m_owner.UnSummon();
-    return true;
 }
 
 void TempSummon::RemoveFromWorld()

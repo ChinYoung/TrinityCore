@@ -34,15 +34,15 @@ static BossBoundaryData const boundaries =
     { DATA_IGNIS, new RectangleBoundary(495.0f, 680.0f, 90.0f, 400.0f) },
     { DATA_RAZORSCALE, new RectangleBoundary(370.0f, 810.0f, -542.0f, -55.0f) },
     { DATA_XT002, new RectangleBoundary(755.0f, 940.0f, -125.0f, 95.0f) },
-    { DATA_ASSEMBLY_OF_IRON, new CircleBoundary(Position(1587.2f, 121.0f), 90.0) },
-    { DATA_ALGALON, new CircleBoundary(Position(1632.668f, -307.7656f), 45.0) },
+    { DATA_ASSEMBLY_OF_IRON, new CircleBoundary(Position(1587.2f, 121.0f), 90.0f) },
+    { DATA_ALGALON, new CircleBoundary(Position(1632.668f, -307.7656f), 45.0f) },
     { DATA_ALGALON, new ZRangeBoundary(410.0f, 470.0f) },
-    { DATA_HODIR, new EllipseBoundary(Position(2001.5f, -240.0f), 50.0, 75.0) },
+    { DATA_HODIR, new EllipseBoundary(Position(2001.5f, -240.0f), 50.0f, 75.0f) },
     // Thorim sets boundaries dynamically
     { DATA_FREYA, new RectangleBoundary(2094.6f, 2520.0f, -250.0f, 200.0f) },
-    { DATA_MIMIRON, new CircleBoundary(Position(2744.0f, 2569.0f), 70.0) },
+    { DATA_MIMIRON, new CircleBoundary(Position(2744.0f, 2569.0f), 70.0f) },
     { DATA_VEZAX, new RectangleBoundary(1740.0f, 1930.0f, 31.0f, 228.0f) },
-    { DATA_YOGG_SARON, new CircleBoundary(Position(1980.42f, -27.68f), 105.0) }
+    { DATA_YOGG_SARON, new CircleBoundary(Position(1980.42f, -27.68f), 105.0f) }
 };
 
 static DoorData const doorData[] =
@@ -191,7 +191,6 @@ class instance_ulduar : public InstanceMapScript
 
                 _maxArmorItemLevel = 0;
                 _maxWeaponItemLevel = 0;
-                TeamInInstance = 0;
                 HodirRareCacheData = 0;
                 ColossusData = 0;
                 elderCount = 0;
@@ -234,7 +233,6 @@ class instance_ulduar : public InstanceMapScript
             ObjectGuid BrainRoomDoorGUIDs[3];
 
             // Miscellaneous
-            uint32 TeamInInstance;
             uint32 HodirRareCacheData;
             uint32 ColossusData;
             uint8 elderCount;
@@ -245,11 +243,8 @@ class instance_ulduar : public InstanceMapScript
             bool Unbroken;
             bool IsDriveMeCrazyEligible;
 
-            void OnPlayerEnter(Player* player) override
+            void OnPlayerEnter(Player* /*player*/) override
             {
-                if (!TeamInInstance)
-                    TeamInInstance = player->GetTeam();
-
                 if (_summonAlgalon)
                 {
                     _summonAlgalon = false;
@@ -412,37 +407,29 @@ class instance_ulduar : public InstanceMapScript
 
             uint32 GetCreatureEntry(ObjectGuid::LowType /*guidLow*/, CreatureData const* data) override
             {
-                if (!TeamInInstance)
-                {
-                    Map::PlayerList const& Players = instance->GetPlayers();
-                    if (!Players.isEmpty())
-                        if (Player* player = Players.begin()->GetSource())
-                            TeamInInstance = player->GetTeam();
-                }
-
                 uint32 entry = data->id;
                 switch (entry)
                 {
                     case NPC_EIVI_NIGHTFEATHER:
-                        return TeamInInstance == HORDE ? NPC_TOR_GREYCLOUD : NPC_EIVI_NIGHTFEATHER;
+                        return instance->GetTeamInInstance() == HORDE ? NPC_TOR_GREYCLOUD : NPC_EIVI_NIGHTFEATHER;
                     case NPC_ELLIE_NIGHTFEATHER:
-                        return TeamInInstance == HORDE ? NPC_KAR_GREYCLOUD : NPC_ELLIE_NIGHTFEATHER;
+                        return instance->GetTeamInInstance() == HORDE ? NPC_KAR_GREYCLOUD : NPC_ELLIE_NIGHTFEATHER;
                     case NPC_ELEMENTALIST_MAHFUUN:
-                        return TeamInInstance == HORDE ? NPC_SPIRITWALKER_TARA : NPC_ELEMENTALIST_MAHFUUN;
+                        return instance->GetTeamInInstance() == HORDE ? NPC_SPIRITWALKER_TARA : NPC_ELEMENTALIST_MAHFUUN;
                     case NPC_ELEMENTALIST_AVUUN:
-                        return TeamInInstance == HORDE ? NPC_SPIRITWALKER_YONA : NPC_ELEMENTALIST_AVUUN;
+                        return instance->GetTeamInInstance() == HORDE ? NPC_SPIRITWALKER_YONA : NPC_ELEMENTALIST_AVUUN;
                     case NPC_MISSY_FLAMECUFFS:
-                        return TeamInInstance == HORDE ? NPC_AMIRA_BLAZEWEAVER : NPC_MISSY_FLAMECUFFS;
+                        return instance->GetTeamInInstance() == HORDE ? NPC_AMIRA_BLAZEWEAVER : NPC_MISSY_FLAMECUFFS;
                     case NPC_SISSY_FLAMECUFFS:
-                        return TeamInInstance == HORDE ? NPC_VEESHA_BLAZEWEAVER : NPC_SISSY_FLAMECUFFS;
+                        return instance->GetTeamInInstance() == HORDE ? NPC_VEESHA_BLAZEWEAVER : NPC_SISSY_FLAMECUFFS;
                     case NPC_FIELD_MEDIC_PENNY:
-                        return TeamInInstance == HORDE ? NPC_BATTLE_PRIEST_ELIZA : NPC_FIELD_MEDIC_PENNY;
+                        return instance->GetTeamInInstance() == HORDE ? NPC_BATTLE_PRIEST_ELIZA : NPC_FIELD_MEDIC_PENNY;
                     case NPC_FIELD_MEDIC_JESSI:
-                        return TeamInInstance == HORDE ? NPC_BATTLE_PRIEST_GINA : NPC_FIELD_MEDIC_JESSI;
+                        return instance->GetTeamInInstance() == HORDE ? NPC_BATTLE_PRIEST_GINA : NPC_FIELD_MEDIC_JESSI;
                     case NPC_MERCENARY_CAPTAIN_H:
-                        return TeamInInstance == HORDE ? NPC_MERCENARY_CAPTAIN_A : NPC_MERCENARY_CAPTAIN_H;
+                        return instance->GetTeamInInstance() == HORDE ? NPC_MERCENARY_CAPTAIN_A : NPC_MERCENARY_CAPTAIN_H;
                     case NPC_MERCENARY_SOLDIER_H:
-                        return TeamInInstance == HORDE ? NPC_MERCENARY_SOLDIER_A : NPC_MERCENARY_SOLDIER_H;
+                        return instance->GetTeamInInstance() == HORDE ? NPC_MERCENARY_SOLDIER_A : NPC_MERCENARY_SOLDIER_H;
                     default:
                         return entry;
                 }

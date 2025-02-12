@@ -16,28 +16,17 @@
  */
 
 #include "BattlegroundMgr.h"
-#include "BattlegroundAB.h"
-#include "BattlegroundAV.h"
-#include "BattlegroundBE.h"
-#include "BattlegroundBFG.h"
-#include "BattlegroundDS.h"
-#include "BattlegroundEY.h"
-#include "BattlegroundIC.h"
-#include "BattlegroundNA.h"
+#include "Arena.h"
 #include "BattlegroundPackets.h"
-#include "BattlegroundRL.h"
-#include "BattlegroundRV.h"
-#include "BattlegroundSA.h"
-#include "BattlegroundTP.h"
-#include "BattlegroundWS.h"
 #include "Containers.h"
-#include "DatabaseEnv.h"
 #include "DB2Stores.h"
+#include "DatabaseEnv.h"
 #include "DisableMgr.h"
 #include "GameEventMgr.h"
 #include "Language.h"
 #include "Log.h"
 #include "MapManager.h"
+#include "MapUtils.h"
 #include "ObjectMgr.h"
 #include "Player.h"
 #include "SharedDefines.h"
@@ -84,22 +73,7 @@ BattlegroundMgr::~BattlegroundMgr()
 
 void BattlegroundMgr::DeleteAllBattlegrounds()
 {
-    for (BattlegroundDataContainer::iterator itr1 = bgDataStore.begin(); itr1 != bgDataStore.end(); ++itr1)
-    {
-        BattlegroundData& data = itr1->second;
-
-        while (!data.m_Battlegrounds.empty())
-            delete data.m_Battlegrounds.begin()->second;
-
-        data.m_Battlegrounds.clear();
-    }
-
     bgDataStore.clear();
-
-    for (auto itr = m_BGFreeSlotQueue.begin(); itr != m_BGFreeSlotQueue.end(); ++itr)
-        while (!itr->second.empty())
-            delete itr->second.front();
-
     m_BGFreeSlotQueue.clear();
 }
 
@@ -122,18 +96,19 @@ void BattlegroundMgr::Update(uint32 diff)
             for (BattlegroundContainer::iterator itr = itrDelete; itr != bgs.end();)
             {
                 itrDelete = itr++;
-                Battleground* bg = itrDelete->second;
+                Battleground* bg = itrDelete->second.get();
 
                 bg->Update(m_UpdateTimer);
                 if (bg->ToBeDeleted())
                 {
-                    itrDelete->second = nullptr;
-                    bgs.erase(itrDelete);
                     BattlegroundClientIdsContainer& clients = itr1->second.m_ClientBattlegroundIds[bg->GetBracketId()];
                     if (!clients.empty())
                         clients.erase(bg->GetClientInstanceID());
 
-                    delete bg;
+                    // move out unique_ptr to delete after erasing
+                    Trinity::unique_trackable_ptr<Battleground> bgPtr = std::move(itrDelete->second);
+
+                    bgs.erase(itrDelete);
                 }
             }
         }
@@ -151,13 +126,8 @@ void BattlegroundMgr::Update(uint32 diff)
         std::vector<ScheduledQueueUpdate> scheduled;
         std::swap(scheduled, m_QueueUpdateScheduler);
 
-        for (uint8 i = 0; i < scheduled.size(); i++)
-        {
-            uint32 arenaMMRating = scheduled[i].ArenaMatchmakerRating;
-            BattlegroundQueueTypeId bgQueueTypeId = scheduled[i].QueueId;
-            BattlegroundBracketId bracket_id = scheduled[i].BracketId;
+        for (auto& [arenaMMRating, bgQueueTypeId, bracket_id] : scheduled)
             GetBattlegroundQueue(bgQueueTypeId).BattlegroundQueueUpdate(diff, bracket_id, arenaMMRating);
-        }
     }
 
     // if rating difference counts, maybe force-update queues
@@ -182,7 +152,7 @@ void BattlegroundMgr::Update(uint32 diff)
     }
 }
 
-void BattlegroundMgr::BuildBattlegroundStatusHeader(WorldPackets::Battleground::BattlefieldStatusHeader* header, Player* player, uint32 ticketId, uint32 joinTime, BattlegroundQueueTypeId queueId)
+void BattlegroundMgr::BuildBattlegroundStatusHeader(WorldPackets::Battleground::BattlefieldStatusHeader* header, Player const* player, uint32 ticketId, uint32 joinTime, BattlegroundQueueTypeId queueId)
 {
     header->Ticket.RequesterGuid = player->GetGUID();
     header->Ticket.Id = ticketId;
@@ -197,7 +167,7 @@ void BattlegroundMgr::BuildBattlegroundStatusHeader(WorldPackets::Battleground::
     header->TournamentRules = false;
 }
 
-void BattlegroundMgr::BuildBattlegroundStatusNone(WorldPackets::Battleground::BattlefieldStatusNone* battlefieldStatus, Player* player, uint32 ticketId, uint32 joinTime)
+void BattlegroundMgr::BuildBattlegroundStatusNone(WorldPackets::Battleground::BattlefieldStatusNone* battlefieldStatus, Player const* player, uint32 ticketId, uint32 joinTime)
 {
     battlefieldStatus->Ticket.RequesterGuid = player->GetGUID();
     battlefieldStatus->Ticket.Id = ticketId;
@@ -205,7 +175,7 @@ void BattlegroundMgr::BuildBattlegroundStatusNone(WorldPackets::Battleground::Ba
     battlefieldStatus->Ticket.Time = joinTime;
 }
 
-void BattlegroundMgr::BuildBattlegroundStatusNeedConfirmation(WorldPackets::Battleground::BattlefieldStatusNeedConfirmation* battlefieldStatus, Battleground* bg, Player* player, uint32 ticketId, uint32 joinTime, uint32 timeout, BattlegroundQueueTypeId queueId)
+void BattlegroundMgr::BuildBattlegroundStatusNeedConfirmation(WorldPackets::Battleground::BattlefieldStatusNeedConfirmation* battlefieldStatus, Battleground const* bg, Player const* player, uint32 ticketId, uint32 joinTime, uint32 timeout, BattlegroundQueueTypeId queueId)
 {
     BuildBattlegroundStatusHeader(&battlefieldStatus->Hdr, player, ticketId, joinTime, queueId);
     battlefieldStatus->Mapid = bg->GetMapId();
@@ -213,7 +183,7 @@ void BattlegroundMgr::BuildBattlegroundStatusNeedConfirmation(WorldPackets::Batt
     battlefieldStatus->Role = 0;
 }
 
-void BattlegroundMgr::BuildBattlegroundStatusActive(WorldPackets::Battleground::BattlefieldStatusActive* battlefieldStatus, Battleground* bg, Player* player, uint32 ticketId, uint32 joinTime, BattlegroundQueueTypeId queueId)
+void BattlegroundMgr::BuildBattlegroundStatusActive(WorldPackets::Battleground::BattlefieldStatusActive* battlefieldStatus, Battleground const* bg, Player const* player, uint32 ticketId, uint32 joinTime, BattlegroundQueueTypeId queueId)
 {
     BuildBattlegroundStatusHeader(&battlefieldStatus->Hdr, player, ticketId, joinTime, queueId);
     battlefieldStatus->ShutdownTimer = bg->GetRemainingTime();
@@ -223,7 +193,7 @@ void BattlegroundMgr::BuildBattlegroundStatusActive(WorldPackets::Battleground::
     battlefieldStatus->Mapid = bg->GetMapId();
 }
 
-void BattlegroundMgr::BuildBattlegroundStatusQueued(WorldPackets::Battleground::BattlefieldStatusQueued* battlefieldStatus, Player* player, uint32 ticketId, uint32 joinTime, BattlegroundQueueTypeId queueId, uint32 avgWaitTime, bool asGroup)
+void BattlegroundMgr::BuildBattlegroundStatusQueued(WorldPackets::Battleground::BattlefieldStatusQueued* battlefieldStatus, Player const* player, uint32 ticketId, uint32 joinTime, BattlegroundQueueTypeId queueId, uint32 avgWaitTime, bool asGroup)
 {
     BuildBattlegroundStatusHeader(&battlefieldStatus->Hdr, player, ticketId, joinTime, queueId);
     battlefieldStatus->AverageWaitTime = avgWaitTime;
@@ -233,12 +203,12 @@ void BattlegroundMgr::BuildBattlegroundStatusQueued(WorldPackets::Battleground::
     battlefieldStatus->WaitTime = GetMSTimeDiffToNow(joinTime);
 }
 
-void BattlegroundMgr::BuildBattlegroundStatusFailed(WorldPackets::Battleground::BattlefieldStatusFailed* battlefieldStatus, BattlegroundQueueTypeId queueId, Player* pPlayer, uint32 ticketId, GroupJoinBattlegroundResult result, ObjectGuid const* errorGuid /*= nullptr*/)
+void BattlegroundMgr::BuildBattlegroundStatusFailed(WorldPackets::Battleground::BattlefieldStatusFailed* battlefieldStatus, BattlegroundQueueTypeId queueId, Player const* player, uint32 ticketId, GroupJoinBattlegroundResult result, ObjectGuid const* errorGuid /*= nullptr*/)
 {
-    battlefieldStatus->Ticket.RequesterGuid = pPlayer->GetGUID();
+    battlefieldStatus->Ticket.RequesterGuid = player->GetGUID();
     battlefieldStatus->Ticket.Id = ticketId;
     battlefieldStatus->Ticket.Type = WorldPackets::LFG::RideType::Battlegrounds;
-    battlefieldStatus->Ticket.Time = pPlayer->GetBattlegroundQueueJoinTime(queueId);
+    battlefieldStatus->Ticket.Time = player->GetBattlegroundQueueJoinTime(queueId);
     battlefieldStatus->QueueID = queueId.GetPacked();
     battlefieldStatus->Reason = result;
     if (errorGuid && (result == ERR_BATTLEGROUND_NOT_IN_BATTLEGROUND || result == ERR_BATTLEGROUND_JOIN_TIMED_OUT))
@@ -270,10 +240,63 @@ Battleground* BattlegroundMgr::GetBattleground(uint32 instanceId, BattlegroundTy
         BattlegroundContainer const& bgs = it->second.m_Battlegrounds;
         BattlegroundContainer::const_iterator itr = bgs.find(instanceId);
         if (itr != bgs.end())
-           return itr->second;
+           return itr->second.get();
     }
 
     return nullptr;
+}
+
+void BattlegroundMgr::LoadBattlegroundScriptTemplate()
+{
+    uint32 oldMSTime = getMSTime();
+    //                                               0      1                   2
+    QueryResult result = WorldDatabase.Query("SELECT MapId, BattlemasterListId, ScriptName FROM battleground_scripts");
+
+    if (!result)
+    {
+        TC_LOG_INFO("server.loading", ">> Loaded 0 battleground scripts. DB table `battleground_scripts` is empty!");
+        return;
+    }
+
+    uint32 count = 0;
+    do
+    {
+        Field* fields = result->Fetch();
+
+        uint32 mapID = fields[0].GetUInt32();
+
+        MapEntry const* mapEntry = sMapStore.LookupEntry(mapID);
+        if (!mapEntry || !mapEntry->IsBattlegroundOrArena())
+        {
+            TC_LOG_ERROR("sql.sql", "BattlegroundMgr::LoadBattlegroundScriptTemplate: bad mapid {}! Map doesn't exist or is not a battleground/arena!", mapID);
+            continue;
+        }
+
+        BattlegroundTypeId bgTypeId = static_cast<BattlegroundTypeId>(fields[1].GetUInt32());
+        if (bgTypeId != BATTLEGROUND_TYPE_NONE && !Trinity::Containers::MapGetValuePtr(_battlegroundTemplates, bgTypeId))
+        {
+            TC_LOG_ERROR("sql.sql", "BattlegroundMgr::LoadBattlegroundScriptTemplate: bad battlemasterlist id {}! Battleground doesn't exist or is not supported in battleground_template!", bgTypeId);
+            continue;
+        }
+
+        BattlegroundScriptTemplate& scriptTemplate = _battlegroundScriptTemplates[{ mapID, bgTypeId }];
+        scriptTemplate.MapId = mapID;
+        scriptTemplate.Id = bgTypeId;
+        scriptTemplate.ScriptId = sObjectMgr->GetScriptId(fields[2].GetString());
+
+        ++count;
+    } while (result->NextRow());
+
+    TC_LOG_INFO("server.loading", ">> Loaded {} battleground scripts in {} ms", count, GetMSTimeDiffToNow(oldMSTime));
+}
+
+BattlegroundScriptTemplate const* BattlegroundMgr::FindBattlegroundScriptTemplate(uint32 mapId, BattlegroundTypeId bgTypeId) const
+{
+    if (BattlegroundScriptTemplate const* scriptTemplate = Trinity::Containers::MapGetValuePtr(_battlegroundScriptTemplates, { mapId, bgTypeId }))
+        return scriptTemplate;
+
+    // fall back to 0 for no specific battleground type id
+    return Trinity::Containers::MapGetValuePtr(_battlegroundScriptTemplates, { mapId, BATTLEGROUND_TYPE_NONE });
 }
 
 uint32 BattlegroundMgr::CreateClientVisibleInstanceId(BattlegroundTypeId bgTypeId, BattlegroundBracketId bracket_id)
@@ -315,64 +338,18 @@ Battleground* BattlegroundMgr::CreateNewBattleground(BattlegroundQueueTypeId que
         return nullptr;
     }
 
-    PVPDifficultyEntry const* bracketEntry = DB2Manager::GetBattlegroundBracketById(bg_template->BattlemasterEntry->MapID[0], bracketId);
+    PVPDifficultyEntry const* bracketEntry = DB2Manager::GetBattlegroundBracketById(bg_template->MapIDs.front(), bracketId);
     if (!bracketEntry)
     {
-        TC_LOG_ERROR("bg.battleground", "Battleground: CreateNewBattleground: bg bracket entry not found for map {} bracket id {}", bg_template->BattlemasterEntry->MapID[0], bracketId);
+        TC_LOG_ERROR("bg.battleground", "Battleground: CreateNewBattleground: bg bracket entry not found for map {} bracket id {}", bg_template->MapIDs.front(), bracketId);
         return nullptr;
     }
 
     Battleground* bg = nullptr;
-    // create a copy of the BG template
-    switch (bgTypeId)
-    {
-        case BATTLEGROUND_AV:
-            bg = new BattlegroundAV(bg_template);
-            break;
-        case BATTLEGROUND_WS:
-        case BATTLEGROUND_WG_CTF:
-            bg = new BattlegroundWS(bg_template);
-            break;
-        case BATTLEGROUND_AB:
-        case BATTLEGROUND_DOM_AB:
-            bg = new BattlegroundAB(bg_template);
-            break;
-        case BATTLEGROUND_NA:
-            bg = new BattlegroundNA(bg_template);
-            break;
-        case BATTLEGROUND_BE:
-            bg = new BattlegroundBE(bg_template);
-            break;
-        case BATTLEGROUND_EY:
-            bg = new BattlegroundEY(bg_template);
-            break;
-        case BATTLEGROUND_RL:
-            bg = new BattlegroundRL(bg_template);
-            break;
-        case BATTLEGROUND_SA:
-            bg = new BattlegroundSA(bg_template);
-            break;
-        case BATTLEGROUND_DS:
-            bg = new BattlegroundDS(bg_template);
-            break;
-        case BATTLEGROUND_RV:
-            bg = new BattlegroundRV(bg_template);
-            break;
-        case BATTLEGROUND_IC:
-            bg = new BattlegroundIC(bg_template);
-            break;
-        case BATTLEGROUND_TP:
-            bg = new BattlegroundTP(bg_template);
-            break;
-        case BATTLEGROUND_BFG:
-            bg = new BattlegroundBFG(bg_template);
-            break;
-        case BATTLEGROUND_RB:
-        case BATTLEGROUND_AA:
-        case BATTLEGROUND_RANDOM_EPIC:
-        default:
-            return nullptr;
-    }
+    if (bg_template->IsArena())
+        bg = new Arena(bg_template);
+    else
+        bg = new Battleground(bg_template);
 
     bg->SetBracket(bracketEntry);
     bg->SetInstanceID(sMapMgr->GenerateInstanceId());
@@ -398,6 +375,11 @@ void BattlegroundMgr::LoadBattlegroundTemplates()
         TC_LOG_INFO("server.loading", ">> Loaded 0 battlegrounds. DB table `battleground_template` is empty.");
         return;
     }
+
+    std::unordered_map<BattlegroundTypeId, std::vector<int32>> mapsByBattleground;
+    for (BattlemasterListXMapEntry const* battlemasterListXMap : sBattlemasterListXMapStore)
+        if (sBattlemasterListStore.HasRecord(battlemasterListXMap->BattlemasterListID) && sMapStore.HasRecord(battlemasterListXMap->MapID))
+            mapsByBattleground[BattlegroundTypeId(battlemasterListXMap->BattlemasterListID)].push_back(battlemasterListXMap->MapID);
 
     uint32 count = 0;
 
@@ -425,6 +407,7 @@ void BattlegroundMgr::LoadBattlegroundTemplates()
         bgTemplate.Weight            = fields[4].GetUInt8();
         bgTemplate.ScriptId          = sObjectMgr->GetScriptId(fields[5].GetString());
         bgTemplate.BattlemasterEntry = bl;
+        bgTemplate.MapIDs            = std::move(mapsByBattleground[bgTypeId]);
 
         if (bgTemplate.Id != BATTLEGROUND_AA && !IsRandomBattleground(bgTemplate.Id))
         {
@@ -453,8 +436,8 @@ void BattlegroundMgr::LoadBattlegroundTemplates()
             }
         }
 
-        if (bgTemplate.BattlemasterEntry->MapID[1] == -1) // in this case we have only one mapId
-            _battlegroundMapTemplates[bgTemplate.BattlemasterEntry->MapID[0]] = &_battlegroundTemplates[bgTypeId];
+        if (bgTemplate.MapIDs.size() == 1)
+            _battlegroundMapTemplates[bgTemplate.MapIDs.front()] = &_battlegroundTemplates[bgTypeId];
 
         ++count;
     }
@@ -488,7 +471,7 @@ void BattlegroundMgr::SendToBattleground(Player* player, uint32 instanceId, Batt
 
         WorldSafeLocsEntry const* pos = bg->GetTeamStartPosition(Battleground::GetTeamIndexByTeamId(team));
         TC_LOG_DEBUG("bg.battleground", "BattlegroundMgr::SendToBattleground: Sending {} to map {}, {} (bgType {})", player->GetName(), mapid, pos->Loc.ToString(), bgTypeId);
-        player->TeleportTo(pos->Loc);
+        player->TeleportTo({ .Location = pos->Loc, .TransportGuid = pos->TransportSpawnId ? ObjectGuid::Create<HighGuid::Transport>(*pos->TransportSpawnId) : ObjectGuid::Empty });
     }
     else
         TC_LOG_ERROR("bg.battleground", "BattlegroundMgr::SendToBattleground: Instance {} (bgType {}) not found while trying to teleport player {}", instanceId, bgTypeId, player->GetName());
@@ -511,7 +494,7 @@ bool BattlegroundMgr::IsRandomBattleground(uint32 battlemasterListId)
 
 BattlegroundQueueTypeId BattlegroundMgr::BGQueueTypeId(uint16 battlemasterListId, BattlegroundQueueIdType type, bool rated, uint8 teamSize)
 {
-    return { battlemasterListId, AsUnderlyingType(type), rated, teamSize };
+    return { .BattlemasterListId = battlemasterListId, .Type = AsUnderlyingType(type), .Rated = rated, .TeamSize = teamSize };
 }
 
 void BattlegroundMgr::ToggleTesting()
@@ -699,23 +682,14 @@ BattlegroundTypeId BattlegroundMgr::GetRandomBG(BattlegroundTypeId bgTypeId)
 {
     if (BattlegroundTemplate const* bgTemplate = GetBattlegroundTemplateByTypeId(bgTypeId))
     {
-        std::vector<BattlegroundTypeId> ids;
-        ids.reserve(16);
-        std::vector<double> weights;
-        weights.reserve(16);
-        for (int32 mapId : bgTemplate->BattlemasterEntry->MapID)
-        {
-            if (mapId == -1)
-                break;
-
+        std::vector<BattlegroundTemplate const*> ids;
+        ids.reserve(bgTemplate->MapIDs.size());
+        for (int32 mapId : bgTemplate->MapIDs)
             if (BattlegroundTemplate const* bg = GetBattlegroundTemplateByMapId(mapId))
-            {
-                ids.push_back(bg->Id);
-                weights.push_back(bg->Weight);
-            }
-        }
+                ids.push_back(bg);
 
-        return *Trinity::Containers::SelectRandomWeightedContainerElement(ids, std::span(weights));
+        if (!ids.empty())
+            return (*Trinity::Containers::SelectRandomWeightedContainerElement(ids, [](BattlegroundTemplate const* bg) { return bg->Weight; }))->Id;
     }
 
     return BATTLEGROUND_TYPE_NONE;
@@ -745,10 +719,9 @@ void BattlegroundMgr::RemoveFromBGFreeSlotQueue(uint32 mapId, uint32 instanceId)
 void BattlegroundMgr::AddBattleground(Battleground* bg)
 {
     if (bg)
-        bgDataStore[bg->GetTypeID()].m_Battlegrounds[bg->GetInstanceID()] = bg;
-}
-
-void BattlegroundMgr::RemoveBattleground(BattlegroundTypeId bgTypeId, uint32 instanceId)
-{
-    bgDataStore[bgTypeId].m_Battlegrounds.erase(instanceId);
+    {
+        Trinity::unique_trackable_ptr<Battleground>& ptr = bgDataStore[bg->GetTypeID()].m_Battlegrounds[bg->GetInstanceID()];
+        ptr.reset(bg);
+        bg->SetWeakPtr(ptr);
+    }
 }

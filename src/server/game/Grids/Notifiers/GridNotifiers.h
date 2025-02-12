@@ -49,7 +49,7 @@ namespace Trinity
     {
         Player &i_player;
         UpdateData i_data;
-        std::set<Unit*> i_visibleNow;
+        std::set<WorldObject*> i_visibleNow;
         GuidUnorderedSet vis_guids;
 
         VisibleNotifier(Player &player) : i_player(player), i_data(player.GetMapId()), vis_guids(player.m_clientGUIDs) { }
@@ -106,6 +106,15 @@ namespace Trinity
         explicit AIRelocationNotifier(Unit &unit) : i_unit(unit), isCreature(unit.GetTypeId() == TYPEID_UNIT)  { }
         template<class T> void Visit(GridRefManager<T> &) { }
         void Visit(CreatureMapType &);
+    };
+
+    struct TC_GAME_API CreatureAggroGracePeriodExpiredNotifier
+    {
+        Creature& i_creature;
+        CreatureAggroGracePeriodExpiredNotifier(Creature& c) : i_creature(c) { }
+        template<class T> void Visit(GridRefManager<T>&) { }
+        void Visit(CreatureMapType&);
+        void Visit(PlayerMapType&);
     };
 
     struct GridUpdater
@@ -612,6 +621,46 @@ namespace Trinity
         template<class NOT_INTERESTED> void Visit(GridRefManager<NOT_INTERESTED> &) { }
     };
 
+    // AreaTrigger searchers
+    template<class Check, class Result>
+    struct AreaTriggerSearcherBase : Result
+    {
+        PhaseShift const* i_phaseShift;
+        Check& i_check;
+
+        template<typename Container>
+        AreaTriggerSearcherBase(PhaseShift const* phaseShift, Container& result, Check& check)
+            : Result(result), i_phaseShift(phaseShift), i_check(check) {
+        }
+
+        void Visit(AreaTriggerMapType& m);
+
+        template<class NOT_INTERESTED> void Visit(GridRefManager<NOT_INTERESTED>&) {}
+    };
+
+    template<class Check>
+    struct AreaTriggerSearcher : AreaTriggerSearcherBase<Check, SearcherFirstObjectResult<AreaTrigger*>>
+    {
+        AreaTriggerSearcher(WorldObject const* searcher, AreaTrigger*& result, Check& check)
+            : AreaTriggerSearcherBase<Check, SearcherFirstObjectResult<AreaTrigger*>>(&searcher->GetPhaseShift(), result, check) {}
+    };
+
+    // Last accepted by Check GO if any (Check can change requirements at each call)
+    template<class Check>
+    struct AreaTriggerLastSearcher : AreaTriggerSearcherBase<Check, SearcherLastObjectResult<AreaTrigger*>>
+    {
+        AreaTriggerLastSearcher(WorldObject const* searcher, AreaTrigger*& result, Check& check)
+            : AreaTriggerSearcherBase<Check, SearcherLastObjectResult<AreaTrigger*>>(&searcher->GetPhaseShift(), result, check) {}
+    };
+
+    template<class Check>
+    struct AreaTriggerListSearcher : AreaTriggerSearcherBase<Check, SearcherContainerResult<AreaTrigger*>>
+    {
+        template<typename Container>
+        AreaTriggerListSearcher(WorldObject const* searcher, Container& container, Check& check)
+            : AreaTriggerSearcherBase<Check, SearcherContainerResult<AreaTrigger*>>(&searcher->GetPhaseShift(), container, check) {}
+    };
+
     // CHECKS && DO classes
 
     // CHECK modifiers
@@ -1010,7 +1059,7 @@ namespace Trinity
                 if (i_incTargetRadius)
                     searchRadius += u->GetCombatReach();
 
-                if (!u->IsInMap(i_obj) || !u->InSamePhase(i_obj) || !u->IsWithinDoubleVerticalCylinder(i_obj, searchRadius, searchRadius))
+                if (!u->IsInMap(i_obj) || !u->InSamePhase(i_obj) || !u->IsWithinVerticalCylinder(*i_obj, searchRadius, searchRadius, true))
                     return false;
 
                 if (!i_funit->IsFriendlyTo(u))
@@ -1059,7 +1108,7 @@ namespace Trinity
                 if (i_incTargetRadius)
                     searchRadius += u->GetCombatReach();
 
-                return u->IsInMap(_source) && u->InSamePhase(_source) && u->IsWithinDoubleVerticalCylinder(_source, searchRadius, searchRadius);
+                return u->IsInMap(_source) && u->InSamePhase(_source) && u->IsWithinVerticalCylinder(*_source, searchRadius, searchRadius, true);
             }
 
         private:
@@ -1075,20 +1124,24 @@ namespace Trinity
     class AnyUnitInObjectRangeCheck
     {
         public:
-            AnyUnitInObjectRangeCheck(WorldObject const* obj, float range, bool check3D = true) : i_obj(obj), i_range(range), i_check3D(check3D) { }
+            AnyUnitInObjectRangeCheck(WorldObject const* obj, float range, bool check3D = true, bool reqAlive = true) : i_obj(obj), i_range(range), i_check3D(check3D), i_reqAlive(reqAlive) { }
 
             bool operator()(Unit* u) const
             {
-                if (u->IsAlive() && i_obj->IsWithinDist(u, i_range, i_check3D))
-                    return true;
+                if (i_reqAlive && !u->IsAlive())
+                    return false;
 
-                return false;
+                if (!i_obj->IsWithinDist(u, i_range, i_check3D))
+                    return false;
+
+                return true;
             }
 
         private:
             WorldObject const* i_obj;
             float i_range;
             bool i_check3D;
+            bool i_reqAlive;
     };
 
     // Success at unit in range, range update for next check (this can be use with UnitLastSearcher to find nearest unit)
@@ -1155,7 +1208,7 @@ namespace Trinity
                 if (i_incTargetRadius)
                     searchRadius += u->GetCombatReach();
 
-                return u->IsInMap(i_obj) && u->InSamePhase(i_obj) && u->IsWithinDoubleVerticalCylinder(i_obj, searchRadius, searchRadius);
+                return u->IsInMap(i_obj) && u->InSamePhase(i_obj) && u->IsWithinVerticalCylinder(*i_obj, searchRadius, searchRadius, true);
             }
 
         private:
@@ -1431,8 +1484,38 @@ namespace Trinity
                 if (i_args.StringId && !u->HasStringId(*i_args.StringId))
                     return false;
 
-                if (i_args.IsAlive.has_value() && u->IsAlive() != i_args.IsAlive)
-                    return false;
+                if (i_args.IsAlive.has_value())
+                {
+                    switch (*i_args.IsAlive)
+                    {
+                        case FindCreatureAliveState::Alive:
+                        {
+                            if (!u->IsAlive())
+                                return false;
+                            break;
+                        }
+                        case FindCreatureAliveState::Dead:
+                        {
+                            if (u->IsAlive())
+                                return false;
+                            break;
+                        }
+                        case FindCreatureAliveState::EffectivelyAlive:
+                        {
+                            if (!u->IsAlive() || u->HasUnitFlag2(UNIT_FLAG2_FEIGN_DEATH))
+                                return false;
+                            break;
+                        }
+                        case FindCreatureAliveState::EffectivelyDead:
+                        {
+                            if (u->IsAlive() && !u->HasUnitFlag2(UNIT_FLAG2_FEIGN_DEATH))
+                                return false;
+                            break;
+                        }
+                        default:
+                            break;
+                    }
+                }
 
                 if (i_args.IsSummon.has_value() && u->IsSummon() != i_args.IsSummon)
                     return false;
@@ -1781,6 +1864,31 @@ namespace Trinity
     private:
         ObjectGuid _ownerGUID;
         uint32 _entry;
+    };
+
+    class NearestAreaTriggerEntryInObjectRangeCheck
+    {
+    public:
+        NearestAreaTriggerEntryInObjectRangeCheck(WorldObject const& obj, uint32 entry, float range, bool spawnedOnly = false) : i_obj(obj), i_entry(entry), i_range(range), i_spawnedOnly(spawnedOnly) { }
+
+        bool operator()(AreaTrigger const* at)
+        {
+            if ((!i_spawnedOnly || at->IsStaticSpawn()) && at->GetEntry() == i_entry && at->GetGUID() != i_obj.GetGUID() && i_obj.IsWithinDist(at, i_range))
+            {
+                i_range = i_obj.GetDistance(at);
+                return true;
+            }
+            return false;
+        }
+
+    private:
+        WorldObject const& i_obj;
+        uint32 i_entry;
+        float  i_range;
+        bool   i_spawnedOnly;
+
+        // prevent clone this object
+        NearestAreaTriggerEntryInObjectRangeCheck(NearestGameObjectEntryInObjectRangeCheck const&) = delete;
     };
 
     // Player checks and do
